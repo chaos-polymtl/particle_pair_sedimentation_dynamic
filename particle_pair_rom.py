@@ -1,21 +1,17 @@
 # -*- coding: utf-8 -*-
-# ============================================================================
-# Reduce order model for particle pair sedimentation
-# Author : Lucka Barbeau, Polytechnique Montréal, 2023
+"""
+Created on Mon Dec 13 10:01:14 2021
 
-# ROM Class definition
-# ============================================================================
-
+@author: lucka
+"""
 import matplotlib.pyplot as plt
 import numpy as np
 from tensorflow import keras
 import joblib as joblib
 import tensorflow as tf
-
 tf.random.set_seed(
     42
 )
-# Huge speed increase in the evaluation of the model
 tf.compat.v1.disable_eager_execution()
 
 
@@ -34,23 +30,33 @@ class ROM_2_particles():
         self.t=0
         self.final_time=final_time
         # Load forces and torque models. The file containing the model must be in the same directory as this file.
-        self.model_cd = keras.models.load_model('drag_model')
-        self.model_cl = keras.models.load_model('lift_model')
-        self.model_ct = keras.models.load_model('torque_model')
-        self.scaler_x_cd = joblib.load("drag_model/scalerx.save") 
-        self.scaler_y_cd = joblib.load("drag_model/scalery.save") 
-        self.scaler_x_cl = joblib.load("lift_model/scalerx.save") 
-        self.scaler_y_cl = joblib.load("lift_model/scalery.save") 
-        self.scaler_x_ct = joblib.load("torque_model/scalerx.save") 
-        self.scaler_y_ct = joblib.load("torque_model/scalery.save")
+        self.model_cd = keras.models.load_model('optimum_drag_model')
+        self.model_cl = keras.models.load_model('optimum_lift_model')
+        self.model_ct = keras.models.load_model('optimum_torque_model')
+        self.scaler_x_cd = joblib.load("optimum_drag_model/scalerx.save") 
+        self.scaler_y_cd = joblib.load("optimum_drag_model/scalery.save") 
+        self.scaler_x_cl = joblib.load("optimum_lift_model/scalerx.save") 
+        self.scaler_y_cl = joblib.load("optimum_lift_model/scalery.save") 
+        self.scaler_x_ct = joblib.load("optimum_torque_model/scalerx.save") 
+        self.scaler_y_ct = joblib.load("optimum_torque_model/scalery.save")
+        self.model_cd_rel_vel = keras.models.load_model('optimum_drag_model_rel_vel')
+        self.model_cl_rel_vel  = keras.models.load_model('optimum_lift_model_rel_vel')
+        self.model_ct_rel_vel  = keras.models.load_model('optimum_torque_model_rel_vel')
+        self.scaler_x_cd_rel_vel  = joblib.load("optimum_drag_model_rel_vel/scalerx.save") 
+        self.scaler_y_cd_rel_vel  = joblib.load("optimum_drag_model_rel_vel/scalery.save") 
+        self.scaler_x_cl_rel_vel  = joblib.load("optimum_lift_model_rel_vel/scalerx.save") 
+        self.scaler_y_cl_rel_vel  = joblib.load("optimum_lift_model_rel_vel/scalery.save") 
+        self.scaler_x_ct_rel_vel  = joblib.load("optimum_torque_model_rel_vel/scalerx.save") 
+        self.scaler_y_ct_rel_vel  = joblib.load("optimum_torque_model_rel_vel/scalery.save")
         # Initialized the object associated with each of the particles and the fluid. These can be modified before launching the simulation.
         self.particle1= self.particle(p_id=1)
         self.particle2= self.particle(p_id=2)
         self.fluid=self.fluid_properties()
         self.gravity=np.array([0.0,0.0,-9.810])
+        self.model_relative_velocity=0
     
     def reset_to_initial_state(self):
-        """A function that resets the history of the particle if the same object is used to do multiple simulations.
+        """A function that resets the history of the simulation if the same object is used to do multiple simulations.
         """ 
         self.particle1.previous_velocity_list=[]
         self.particle2.previous_velocity_list=[]
@@ -457,13 +463,29 @@ class ROM_2_particles():
             Theta=np.pi
         else:
             Theta=np.arccos((np.dot(d_position,velocity_for_calculation)/(np.linalg.norm(velocity_for_calculation)+1e-30))/e)
-
+        
+        direction=d_position-np.dot(d_position,velocity_for_calculation)/(np.linalg.norm(velocity_for_calculation)**2+1e-30)*velocity_for_calculation
+        direction=direction/(np.linalg.norm(direction)+1e-30)
+        v=particle2.velocity-particle1.velocity
+        vx=np.dot(v,velocity_for_calculation)/np.linalg.norm(velocity_for_calculation)**2*velocity_for_calculation
+        vy=np.dot(v,-direction)/np.linalg.norm(direction)**2*-direction
+        vx_norm=np.linalg.norm(vx)*np.sign(np.dot(v,velocity_for_calculation))/np.linalg.norm(particle1.velocity)
+        vy_norm=np.linalg.norm(vy)*np.sign(np.dot(v,-direction))/np.linalg.norm(particle1.velocity)
+           
+        epsilone=(np.linalg.norm(particle1.position-particle2.position)-(particle1.diameter+particle2.diameter)/2)*2/particle1.diameter
+        
         x=np.array([[Re,e,Theta]])
         # evaluate the drag model
         x_input=self.scaler_x_cd.transform(x)
         NN_cd=self.model_cd.predict(x_input,verbose=0)
         Cd= self.scaler_y_cd.inverse_transform(NN_cd)
-        Cd=Cd0*Cd[0][0]
+        Cd_no_rel_vel=Cd0*Cd[0][0]
+        x=np.array([[Re,e,Theta,vx_norm,vy_norm]])
+        x_input=self.scaler_x_cd_rel_vel.transform(x)
+        NN_cd=self.model_cd_rel_vel.predict(x_input,verbose=0)
+        Cd= self.scaler_y_cd_rel_vel.inverse_transform(NN_cd)
+        Cd=self.model_relative_velocity*Cd0*Cd[0][0]+Cd_no_rel_vel
+        
 
         return -1/8*fluid1.rho*np.pi*particle1.diameter**2*Cd*particle1.velocity*np.linalg.norm(particle1.velocity)
 
@@ -492,14 +514,32 @@ class ROM_2_particles():
         else:
             Theta=np.arccos((np.dot(d_position,velocity_for_calculation)/(np.linalg.norm(velocity_for_calculation)+1e-30))/e)
         # evaluate the lift model
+        
+        
+        
+        direction=d_position-np.dot(d_position,velocity_for_calculation)/(np.linalg.norm(velocity_for_calculation)**2+1e-30)*velocity_for_calculation
+        direction=direction/(np.linalg.norm(direction)+1e-30)
+        v=particle2.velocity-particle1.velocity
+        vx=np.dot(v,velocity_for_calculation)/np.linalg.norm(velocity_for_calculation)**2*velocity_for_calculation
+        vy=np.dot(v,-direction)/np.linalg.norm(direction)**2*-direction
+        vx_norm=np.linalg.norm(vx)*np.sign(np.dot(v,velocity_for_calculation))/np.linalg.norm(particle1.velocity)
+        vy_norm=np.linalg.norm(vy)*np.sign(np.dot(v,-direction))/np.linalg.norm(particle1.velocity)
+        # print("Particle id "+str(particle1.id)+" theta "+ str(Theta))
+        # print("Particle id "+str(particle1.id)+" vx normilized velocity "+ str(vx_norm))
+        # print("Particle id "+str(particle1.id)+" vy normilized velocity "+ str(vy_norm))
+        
         x=np.array([[Re,e,Theta]])
+        # evaluate the drag model
         x_input=self.scaler_x_cl.transform(x)
         NN_cl=self.model_cl.predict(x_input,verbose=0)
         Cl= self.scaler_y_cl.inverse_transform(NN_cl)
-        Cl=Cl[0][0]*Cd0
-
-        direction=d_position-np.dot(d_position,velocity_for_calculation)/(np.linalg.norm(velocity_for_calculation)**2+1e-30)*velocity_for_calculation
-        direction=direction/(np.linalg.norm(direction)+1e-30)
+        Cl_no_rel_vel=Cd0*Cl[0][0]
+        x=np.array([[Re,e,Theta,vx_norm,vy_norm]])
+        x_input=self.scaler_x_cl_rel_vel.transform(x)
+        NN_cl=self.model_cl_rel_vel.predict(x_input,verbose=0)
+        Cl= self.scaler_y_cl_rel_vel.inverse_transform(NN_cl)
+        # print("Particle id "+str(particle1.id)+" cl no rel vel  "+str(Cl_no_rel_vel/Cd0) + " cl modif " + str(Cl_no_rel_vel/Cd0))
+        Cl=self.model_relative_velocity*Cd0*Cl[0][0]+Cl_no_rel_vel
 
         return 1*1/8*fluid.rho*np.pi*particle1.diameter**2*Cl*np.linalg.norm(particle1.velocity)**2*direction
 
@@ -525,22 +565,26 @@ class ROM_2_particles():
         """
         force_direction=(particle1.position-particle2.position)/np.linalg.norm(particle1.position-particle2.position)
         centroid_vector=(particle2.position-particle1.position)/np.linalg.norm((particle2.position-particle1.position))
+
         v_ij=np.dot(-particle1.velocity,force_direction)+np.dot(particle2.velocity,force_direction)
+
         kappa=particle2.diameter/particle1.diameter
         epsilone=(np.linalg.norm(particle1.position-particle2.position)-(particle1.diameter+particle2.diameter)/2)*2/particle1.diameter
         epsilone_ref=4.0
         if epsilone> epsilone_ref:
             return 0*force_direction
-        elif epsilone<0.01:
-            epsilone=0.01
+        elif epsilone<0.0625:
+            epsilone=0.0625
 
-        velocity_diff=particle2.velocity-particle1.velocity
+
+
+        velocity_diff=(particle2.velocity-particle1.velocity)
         omega_diff=particle2.omega+particle1.omega
         normal_component=(kappa**2/(1+kappa)**2*(1/epsilone-1/epsilone_ref)-kappa*(1+7*kappa+kappa**2)/(5*(1+kappa)**3)*np.log(epsilone/epsilone_ref))*np.dot(velocity_diff,centroid_vector)*centroid_vector*6.0*np.pi*fluid.mu*(particle1.diameter/2)
         tangential_component_translation=1*-4*kappa*(2+kappa+2*kappa**2)/(15*(1+kappa)**3)*(velocity_diff-np.dot(velocity_diff,centroid_vector)*centroid_vector)*np.log(epsilone/epsilone_ref)*6.0*np.pi*fluid.mu*(particle1.diameter/2)
         tangential_component_rotation=1*2*kappa**2/(15*(1+kappa)**2)*np.cross((omega_diff+4*kappa**-1*particle1.omega+4*kappa*particle2.omega),centroid_vector)*np.log(epsilone/epsilone_ref)*6.0*np.pi*fluid.mu*(particle1.diameter/2)**2
 
-        return normal_component+tangential_component_translation+tangential_component_rotation
+        return (normal_component+tangential_component_translation+tangential_component_rotation)
 
     def F_magnus(self,particle1,fluid1):
         """ Calculates the magnus force.  Loth: https://doi.org/10.2514/1.29159
@@ -615,10 +659,18 @@ class ROM_2_particles():
         Returns:
             the history force.
         """
+        # Mei et al 
+        # c1=2.0
+        # c2=0.105
         # Kim et al 
         c1=2.5
         c2=0.126
+        # Dorgan et al 
+        # c1=2.5
+        # c2=0.2
+
         re_terminal=self.particle1.terminal_velocity*particle1.diameter*fluid1.rho/fluid1.mu
+        
         acceleration1=(particle1.velocity-particle1.last_velocity)/self.dt
         Re=max(np.linalg.norm(particle1.velocity)*particle1.diameter*fluid1.rho/fluid1.mu,1e-6)
         particle_volume=particle1.diameter**3/6*np.pi
@@ -630,15 +682,18 @@ class ROM_2_particles():
         adimensional_time=self.t/time_scale
         adimensional_time_step=self.dt/time_scale
         addimential_accel=acceleration1*time_scale**2/length_scale
+        
         mass_scale=9*particle_volume*fluid1.rho/(2*np.sqrt(np.pi))*(256.0/np.pi)**(1.0/6.0)*g_h_ref
         g_h=(0.75+c2*Re)/Re
         ri=(g_h_ref/g_h)**1.5
         gamma_i=ri**(1.0/3.0)*adimensional_time_step**0.25
         K0_i=2.0/9.0*ri**(-2.0/3.0)*(-0.3722*gamma_i+12.16*gamma_i**2-6.488*gamma_i**3)
+
         F_B_improper_near=-(K0_i*addimential_accel)*mass_scale*length_scale/time_scale**2
         F_B_near=0*acceleration1
         tau=0
         i=0
+
         while (tau+adimensional_time_step/2)<(adimensional_time-adimensional_time_step):
             if i==0:
                 acceleration1_at_tau=(particle1.previous_velocity_list[i+1]-particle1.previous_velocity_list[i])/(self.dt)
@@ -656,9 +711,12 @@ class ROM_2_particles():
                 acceleration2_at_tau=acceleration2_at_tau*time_scale**2/length_scale
                 Ki2=((adimensional_time-(tau+adimensional_time_step))**(0.5/c1)+ri*(adimensional_time-(tau+adimensional_time_step)))**(-c1)
                 F_B_near+=adimensional_time_step*(Ki1*acceleration1_at_tau+Ki2*acceleration2_at_tau)/2
+            
             tau+=adimensional_time_step
             i+=1
+
         F_B_near=-F_B_near*(mass_scale)*(length_scale)/(time_scale)**2
+
         return (F_B_improper_near+ F_B_near)
 
     # Torque function
@@ -711,16 +769,33 @@ class ROM_2_particles():
             Theta=np.pi
         else:
             Theta=np.arccos((np.dot(d_position,velocity_for_calculation)/(np.linalg.norm(velocity_for_calculation)+1e-30))/e)
+        
         # evaluate the torque model
+        direction=d_position-np.dot(d_position,velocity_for_calculation)/(np.linalg.norm(velocity_for_calculation)**2+1e-30)*velocity_for_calculation
+        direction=direction/(np.linalg.norm(direction)+1e-30)
+        v=particle2.velocity-particle1.velocity
+        vx=np.dot(v,velocity_for_calculation)/np.linalg.norm(velocity_for_calculation)**2*velocity_for_calculation
+        vy=np.dot(v,-direction)/np.linalg.norm(direction)**2*-direction
+        vx_norm=np.linalg.norm(vx)*np.sign(np.dot(v,velocity_for_calculation))/np.linalg.norm(particle1.velocity)
+        vy_norm=np.linalg.norm(vy)*np.sign(np.dot(v,-direction))/np.linalg.norm(particle1.velocity)
+        
+
         x=np.array([[Re,e,Theta]])
+        # evaluate the drag model
         x_input=self.scaler_x_ct.transform(x)
         NN_ct=self.model_ct.predict(x_input,verbose=0)
         Ct= self.scaler_y_ct.inverse_transform(NN_ct)
-        Ct=Ct[0][0]*Cd0
+        Ct_no_rel_vel=Cd0*Ct[0][0]
+        x=np.array([[Re,e,Theta,vx_norm,vy_norm]])
+        x_input=self.scaler_x_ct_rel_vel.transform(x)
+        NN_ct=self.model_ct_rel_vel.predict(x_input,verbose=0)
+        Ct= self.scaler_y_ct_rel_vel.inverse_transform(NN_ct)
+        Ct=self.model_relative_velocity*Cd0*Ct[0][0]+Ct_no_rel_vel
         # define vector normal to particle plaine
-        direction=np.cross(velocity_for_calculation,d_position)
-        direction=direction/(np.linalg.norm(direction)+1e-30)
-        return 1.0/16.0*fluid.rho*np.pi*particle1.diameter**3*Ct*np.linalg.norm(velocity_for_calculation)**2*direction
+        rotation_axis=np.cross(velocity_for_calculation,d_position)
+        rotation_axis=rotation_axis/(np.linalg.norm(rotation_axis)+1e-30)
+    
+        return 1/16*fluid.rho*np.pi*particle1.diameter**3*Ct*np.linalg.norm(velocity_for_calculation)**2*rotation_axis
 
     def T_lubrication(self,particle1,particle2,fluid):
             """ Calculates the lubrication torque
@@ -733,7 +808,9 @@ class ROM_2_particles():
             """
             force_direction=(particle1.position-particle2.position)/np.linalg.norm(particle1.position-particle2.position)
             centroid_vector=(particle2.position-particle1.position)/np.linalg.norm((particle2.position-particle1.position))
+
             v_ij=np.dot(-particle1.velocity,force_direction)+np.dot(particle2.velocity,force_direction)
+
             kappa=particle2.diameter/particle1.diameter
             epsilone=(np.linalg.norm(particle1.position-particle2.position)-(particle1.diameter+particle2.diameter)/2)*2/particle1.diameter
 
@@ -742,15 +819,19 @@ class ROM_2_particles():
                 return 0*force_direction
             elif epsilone<0.0625:
                 epsilone=0.0625
-            velocity_diff=particle2.velocity-particle1.velocity
+
+            velocity_diff=(particle2.velocity-particle1.velocity)
             tangential_component_translation=-kappa**(4+kappa)/(10*(1+kappa)**2)*np.cross( centroid_vector,velocity_diff)*np.log(epsilone/epsilone_ref)*8.0*np.pi*fluid.mu*(particle1.diameter/2)**2
             tangential_component_rotation=2*kappa/(5*(1+kappa))*((particle1.omega+kappa*particle2.omega/4)-np.dot((particle1.omega+kappa*particle2.omega/4),centroid_vector)*centroid_vector)*np.log(epsilone/epsilone_ref)*8.0*np.pi*fluid.mu*(particle1.diameter/2)**3
-            return tangential_component_translation+tangential_component_rotation
+            
+            
+           
+            return (tangential_component_translation+tangential_component_rotation)
             
     def run(self):
         """ Run the model . 
         Returns:
-            the output object with all the output variables
+            the output object with all the output variable
         """
         self.particle1.update()
         self.particle2.update()
@@ -854,7 +935,7 @@ class ROM_2_particles():
             # integrate 
             dv1=self.dt*F_1/self.particle1.mass
             dv2=self.dt*F_2/self.particle2.mass
-
+        
             T_1=T_1_dissipation+T_1_induce+T_1_contact+ T_1_history+T_1_lubrication
             T_2=T_2_dissipation+T_2_induce+T_2_contact+T_2_history+T_2_lubrication
             do1=self.dt*T_1/self.particle1.inertia
@@ -925,3 +1006,199 @@ class ROM_2_particles():
                 p1_virtual_mass_force,p2_virtual_mass_force,p1_meshchersky_force,p2_meshchersky_force,p1_drag_force,p2_drag_force,p1_lift_force,p2_lift_force,p1_lubrication_force,p2_lubrication_force,
                 p1_magnus_force,p2_magnus_force,p1_history_force,p2_history_force,p1_contact_force,p2_contact_force,p1_buoyancy_force,p2_buoyancy_force,p1_induce_torque,
                 p2_induce_torque,p1_viscous_torque,p2_viscous_torque,p1_history_torque,p2_history_torque,p1_contact_torque,p2_contact_torque,p1_lubrication_torque,p2_lubrication_torque)
+    
+
+    def impose_dynamic(self,time_vector,dt,p1_imposed_position,p2_imposed_position,p1_imposed_velocity,p2_imposed_velocity,p1_imposed_omega,p2_imposed_omega,fx_0,fy_0,fz_0,fx_1,fy_1,fz_1):
+        self.particle1.update()
+        self.particle2.update()
+        self.particle1.terminal_velocity=self.terminal_velocity(self.particle1)
+        self.particle2.terminal_velocity=self.terminal_velocity(self.particle2)
+        self.dt=dt
+        # Initialized the last virtual mass matrix with the initial position
+        self.F_meshchersky(self.particle1,self.particle2,self.fluid)
+        self.F_meshchersky(self.particle2,self.particle1,self.fluid) 
+        i=1
+
+        # Initialized output
+        surrogate_time=[0]
+        p1_position=[self.particle1.position]
+        p2_position=[self.particle2.position]
+        p1_velocity=[self.particle1.velocity]
+        p2_velocity=[self.particle2.velocity]
+        p1_omega=[self.particle1.omega]
+        p2_omega=[self.particle2.omega]
+        p1_total_fluid_force=[np.array([0.0,0.0,0.0])]
+        p2_total_fluid_force=[np.array([0.0,0.0,0.0])]
+        p1_total_fluid_torque=[np.array([0.0,0.0,0.0])]
+        p2_total_fluid_torque=[np.array([0.0,0.0,0.0])]
+
+        p1_virtual_mass_force=[np.array([0.0,0.0,0.0])]
+        p2_virtual_mass_force=[np.array([0.0,0.0,0.0])]
+        p1_meshchersky_force=[np.array([0.0,0.0,0.0])]
+        p2_meshchersky_force=[np.array([0.0,0.0,0.0])]
+        p1_drag_force=[np.array([0.0,0.0,0.0])]
+        p2_drag_force=[np.array([0.0,0.0,0.0])]
+        p1_lift_force=[np.array([0.0,0.0,0.0])]
+        p2_lift_force=[np.array([0.0,0.0,0.0])]
+        p1_lubrication_force=[np.array([0.0,0.0,0.0])]
+        p2_lubrication_force=[np.array([0.0,0.0,0.0])]
+        p1_magnus_force=[np.array([0.0,0.0,0.0])]
+        p2_magnus_force=[np.array([0.0,0.0,0.0])]
+        p1_history_force=[np.array([0.0,0.0,0.0])]
+        p2_history_force=[np.array([0.0,0.0,0.0])]
+        p1_contact_force=[np.array([0.0,0.0,0.0])]
+        p2_contact_force=[np.array([0.0,0.0,0.0])]
+        p1_buoyancy_force=[np.array([0.0,0.0,0.0])]
+        p2_buoyancy_force=[np.array([0.0,0.0,0.0])]
+        
+        p1_induce_torque=[np.array([0.0,0.0,0.0])]
+        p2_induce_torque=[np.array([0.0,0.0,0.0])]
+        p1_viscous_torque=[np.array([0.0,0.0,0.0])]
+        p2_viscous_torque=[np.array([0.0,0.0,0.0])]
+        p1_history_torque=[np.array([0.0,0.0,0.0])]
+        p2_history_torque=[np.array([0.0,0.0,0.0])]
+        p1_contact_torque=[np.array([0.0,0.0,0.0])]
+        p2_contact_torque=[np.array([0.0,0.0,0.0])]
+        p1_lubrication_torque=[np.array([0.0,0.0,0.0])]
+        p2_lubrication_torque=[np.array([0.0,0.0,0.0])]
+
+        f_0_surrogate_error_norm=[0]
+        f_0_surrogate_error_angle=[0]
+        f_1_surrogate_error_norm=[0]
+        f_1_surrogate_error_angle=[0]
+
+        self.particle1.previous_velocity_list.append(np.copy(self.particle1.velocity))
+        self.particle2.previous_velocity_list.append(np.copy(self.particle2.velocity))
+        
+        self.particle1.previous_omega_list.append(np.copy(self.particle1.omega))
+        self.particle2.previous_omega_list.append(np.copy(self.particle2.omega))
+        max_time=0   
+
+        for i in range(len(time_vector)):
+            print("current time = "+str(self.t))
+            if(max_time<time_vector[i]):
+                max_time=time_vector[i]
+                max_time=round(time_vector[i]/dt)*dt
+            else:
+                # skip if results from a restart
+                continue
+
+            if i==0:
+                # skip if results from bdf ramp
+                continue
+            self.t=max_time
+            
+            self.particle1.last_velocity=np.copy(self.particle1.velocity)
+            self.particle2.last_velocity=np.copy(self.particle2.velocity)
+            self.particle1.last_position=np.copy(self.particle1.position)
+            self.particle2.last_position=np.copy(self.particle2.position)
+            self.particle1.last_omega=np.copy(self.particle1.omega)
+            self.particle2.last_omega=np.copy(self.particle2.omega)
+            self.particle1.position=p1_imposed_position[i]
+            self.particle2.position=p2_imposed_position[i]
+            self.particle1.velocity=p1_imposed_velocity[i]
+            self.particle2.velocity=p2_imposed_velocity[i]
+            self.particle1.omega=p1_imposed_omega[i]
+            self.particle2.omega=p2_imposed_omega[i]
+
+            self.particle1.previous_velocity_list.append(np.copy(self.particle1.velocity))
+            self.particle2.previous_velocity_list.append(np.copy(self.particle2.velocity))   
+            self.particle1.previous_omega_list.append(np.copy(self.particle1.omega))
+            self.particle2.previous_omega_list.append(np.copy(self.particle2.omega))   
+
+            F_1_vm=self.F_added_mass(self.particle1,self.particle2,self.fluid)
+            F_1_mesh=self.F_meshchersky(self.particle1,self.particle2,self.fluid)
+            F_1_drag=self.F_drag(self.particle1,self.particle2,self.fluid)
+            F_1_lift=self.F_lift(self.particle1,self.particle2,self.fluid)
+            F_1_lub=self.F_lubrication(self.particle1,self.particle2,self.fluid)
+            F_1_buoyancy=self.F_buoyancy(self.particle1,self.fluid,self.gravity)
+            F_1_magnus=self.F_magnus(self.particle1,self.fluid)
+            F_1_contact=self.F_contact(self.particle1,self.particle2)
+            F_1_history=self.F_history(self.particle1,self.fluid)
+            F_1=F_1_drag+F_1_lift+F_1_lub+F_1_mesh+F_1_vm+F_1_magnus+ F_1_history
+            T_1_dissipation=self.T_viscous_dissipation(self.particle1,self.fluid)
+            T_1_induce=self.T_induce(self.particle1,self.particle2,self.fluid)
+            T_1_history=self.T_history(self.particle1,self.fluid)
+            T_1_lubrication=self.T_lubrication(self.particle1,self.particle2,self.fluid)
+            if(np.linalg.norm(F_1_contact)>1e-10):
+                T_1_contact=np.cross(F_1_contact,(self.particle2.position-self.particle1.position)*self.particle1.diameter/2.0/np.linalg.norm(self.particle2.position-self.particle1.position))
+            else:
+                T_1_contact=np.array([0.0,0.0,0.0])
+            T_1=T_1_dissipation+ T_1_induce+ T_1_history+T_1_lubrication
+
+            F_2_vm=self.F_added_mass(self.particle2,self.particle1,self.fluid)
+            F_2_mesh=self.F_meshchersky(self.particle2,self.particle1,self.fluid)
+            F_2_drag=self.F_drag(self.particle2,self.particle1,self.fluid)
+            F_2_lift=self.F_lift(self.particle2,self.particle1,self.fluid)
+            F_2_lub=self.F_lubrication(self.particle2,self.particle1,self.fluid)
+            F_2_buoyancy=self.F_buoyancy(self.particle2,self.fluid,self.gravity)
+            F_2_magnus=self.F_magnus(self.particle2,self.fluid)
+            F_2_contact=self.F_contact(self.particle2,self.particle1)
+            F_2_history=self.F_history(self.particle2,self.fluid)
+            F_2=F_2_drag+F_2_lift+F_2_lub+F_2_mesh+F_2_vm+F_2_magnus+ F_2_history
+            T_2_dissipation=self.T_viscous_dissipation(self.particle2,self.fluid)
+            T_2_induce=self.T_induce(self.particle2,self.particle1,self.fluid)
+            T_2_history=self.T_history(self.particle2,self.fluid)
+            T_2_lubrication=self.T_lubrication(self.particle2,self.particle1,self.fluid)
+            if(np.linalg.norm(F_2_contact)>1e-10):
+                T_2_contact=np.cross(F_2_contact,(self.particle1.position-self.particle2.position)*self.particle2.diameter/2.0/np.linalg.norm(self.particle1.position-self.particle2.position))
+            else:
+                T_2_contact=np.array([0.0,0.0,0.0])
+            T_2=T_2_dissipation+ T_2_induce+ T_2_history+T_2_lubrication
+
+            p1_position.append(self.particle1.position)
+            p2_position.append(self.particle2.position)
+            p1_velocity.append(self.particle1.velocity)
+            p2_velocity.append(self.particle2.velocity)
+            p1_omega.append(self.particle1.omega)
+            p2_omega.append(self.particle2.omega)
+            p1_total_fluid_force.append(F_1_drag+F_1_lift+F_1_lub+F_1_mesh+F_1_vm+F_1_magnus+ F_1_history)
+            p2_total_fluid_force.append(F_2_drag+F_2_lift+F_2_lub+F_2_mesh+F_2_vm+F_2_magnus+ F_2_history)
+            p1_total_fluid_torque.append(T_1_dissipation+T_1_induce+T_1_history)
+            p2_total_fluid_torque.append(T_2_dissipation+T_2_induce+T_2_history)
+
+            p1_virtual_mass_force.append(F_1_vm)
+            p2_virtual_mass_force.append(F_2_vm)
+            p1_meshchersky_force.append(F_1_mesh)
+            p2_meshchersky_force.append(F_2_mesh)
+            p1_drag_force.append(F_1_drag)
+            p2_drag_force.append(F_2_drag)
+            p1_lift_force.append(F_1_lift)
+            p2_lift_force.append(F_2_lift)
+            p1_lubrication_force.append(F_1_lub)
+            p2_lubrication_force.append(F_2_lub)
+            p1_magnus_force.append(F_1_magnus)
+            p2_magnus_force.append(F_2_magnus)
+            p1_history_force.append(F_1_history)
+            p2_history_force.append(F_2_history)
+            p1_contact_force.append(F_1_contact)
+            p2_contact_force.append(F_2_contact)
+            p1_buoyancy_force.append(F_1_buoyancy)
+            p2_buoyancy_force.append(F_2_buoyancy)
+            
+            p1_induce_torque.append(T_1_induce)
+            p2_induce_torque.append(T_2_induce)
+            p1_viscous_torque.append(T_1_dissipation)
+            p2_viscous_torque.append(T_2_dissipation)
+            p1_history_torque.append(T_1_history)
+            p2_history_torque.append(T_2_history)
+            p1_contact_torque.append(T_1_contact)
+            p2_contact_torque.append(T_2_contact)
+            p1_lubrication_torque.append(T_1_lubrication)
+            p2_lubrication_torque.append(T_2_lubrication)
+            surrogate_time.append(max_time)
+            f_0_surrogate_error_norm.append(np.sqrt((F_1[0]-fx_0[i])**2+(F_1[1]-fy_0[i])**2+(F_1[2]-fz_0[i])**2)/np.linalg.norm(F_1_buoyancy))
+            f_0_surrogate_error_angle.append(np.arccos(((F_1[0]*fx_0[i])+(F_1[1]*fy_0[i])+(F_1[2]*fz_0[i]))/np.sqrt((fx_0[i])**2+(fy_0[i])**2+(fz_0[i])**2)/np.linalg.norm(F_1)))
+            f_1_surrogate_error_norm.append(np.sqrt((F_2[0]-fx_1[i])**2+(F_2[1]-fy_1[i])**2+(F_2[2]-fz_1[i])**2)/np.linalg.norm(F_2_buoyancy))
+            f_1_surrogate_error_angle.append(np.arccos(((F_2[0]*fx_1[i])+(F_2[1]*fy_1[i])+(F_2[2]*fz_1[i]))/np.sqrt((fx_1[i])**2+(fy_1[i])**2+(fz_1[i])**2)/np.linalg.norm(F_2)))   
+        
+        return self.output(surrogate_time,p1_position,p2_position,p1_velocity,p2_velocity,p1_omega,p2_omega,p1_total_fluid_force,p2_total_fluid_force,p1_total_fluid_torque,p2_total_fluid_torque,
+                p1_virtual_mass_force,p2_virtual_mass_force,p1_meshchersky_force,p2_meshchersky_force,p1_drag_force,p2_drag_force,p1_lift_force,p2_lift_force,p1_lubrication_force,p2_lubrication_force,
+                p1_magnus_force,p2_magnus_force,p1_history_force,p2_history_force,p1_contact_force,p2_contact_force,p1_buoyancy_force,p2_buoyancy_force,p1_induce_torque,
+                p2_induce_torque,p1_viscous_torque,p2_viscous_torque,p1_history_torque,p2_history_torque,p1_contact_torque,p2_contact_torque,p1_lubrication_torque,p2_lubrication_torque)
+
+
+
+
+
+

@@ -33,6 +33,9 @@ rom_model.particle2.rho=0.001
 rom_model.particle1.diameter=1.0
 rom_model.particle2.diameter=1.0
 
+### uncomment to run with relative velocity force model
+#rom_model.model_relative_velocity=1.0
+
 #Update the particle state with the variables
 rom_model.particle1.update()
 rom_model.particle2.update()
